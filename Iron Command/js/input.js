@@ -1,0 +1,345 @@
+// ═══════════════════════════════════════════════════
+//  IRON COMMAND — Input Handler
+//  Keyboard, mouse, drag-select, edge-pan, minimap
+// ═══════════════════════════════════════════════════
+
+'use strict';
+
+const Input = (() => {
+
+  // ─── State ────────────────────────────────────────────────────────────────────
+  const keys = {};           // currently held keys
+  const mouse = {
+    x: 0, y: 0,             // screen position
+    wx: 0, wy: 0,           // world position
+    down: false,
+    rightDown: false,
+    dragStart: null,         // { x, y, wx, wy } screen+world at mousedown
+    dragging: false,         // true once drag threshold exceeded
+  };
+
+  let _canvas   = null;      // game canvas element
+  let _scroll   = null;      // ref object { x, y } — mutated by Input
+  let _cols     = 0;
+  let _rows     = 0;
+  let _getScroll = null;     // function() → { x, y }
+  let _callbacks = {};       // registered event callbacks
+
+  const DRAG_THRESHOLD = 6;  // px before drag-select activates
+
+  // ─── Initialise ───────────────────────────────────────────────────────────────
+  // canvas   : the main game canvas
+  // scrollRef: object with { x, y } that Input will mutate for scrolling
+  // cols, rows: map size
+  // callbacks: { onLeftClick, onRightClick, onBoxSelect, onKeyAction }
+
+  function init(canvas, scrollRef, cols, rows, callbacks) {
+    _canvas    = canvas;
+    _scroll    = scrollRef;
+    _cols      = cols;
+    _rows      = rows;
+    _callbacks = callbacks || {};
+
+    // Remove old listeners if reinitialising
+    destroy();
+
+    window.addEventListener('keydown',   _onKeyDown);
+    window.addEventListener('keyup',     _onKeyUp);
+    canvas.addEventListener('mousedown', _onMouseDown);
+    canvas.addEventListener('mousemove', _onMouseMove);
+    canvas.addEventListener('mouseup',   _onMouseUp);
+    canvas.addEventListener('contextmenu', _onContextMenu);
+    canvas.addEventListener('mouseleave', _onMouseLeave);
+  }
+
+  function destroy() {
+    window.removeEventListener('keydown',   _onKeyDown);
+    window.removeEventListener('keyup',     _onKeyUp);
+    if (_canvas) {
+      _canvas.removeEventListener('mousedown', _onMouseDown);
+      _canvas.removeEventListener('mousemove', _onMouseMove);
+      _canvas.removeEventListener('mouseup',   _onMouseUp);
+      _canvas.removeEventListener('contextmenu', _onContextMenu);
+      _canvas.removeEventListener('mouseleave', _onMouseLeave);
+    }
+  }
+
+  // ─── Coordinate helpers ───────────────────────────────────────────────────────
+  function _screenToWorld(sx, sy) {
+    return {
+      wx: sx + _scroll.x,
+      wy: sy + _scroll.y,
+    };
+  }
+
+  function _eventToScreen(e) {
+    const rect = _canvas.getBoundingClientRect();
+    return {
+      sx: e.clientX - rect.left,
+      sy: e.clientY - rect.top,
+    };
+  }
+
+  function screenToWorld(sx, sy) {
+    return _screenToWorld(sx, sy);
+  }
+
+  function worldToScreen(wx, wy) {
+    return {
+      sx: wx - _scroll.x,
+      sy: wy - _scroll.y,
+    };
+  }
+
+  // ─── Keyboard ─────────────────────────────────────────────────────────────────
+  function _onKeyDown(e) {
+    keys[e.key] = true;
+
+    // Escape: cancel placement, deselect
+    if (e.key === 'Escape') {
+      _callbacks.onEscape?.();
+    }
+  }
+
+  function _onKeyUp(e) {
+    keys[e.key] = false;
+  }
+
+  function isKeyDown(key) { return !!keys[key]; }
+
+  // ─── Mouse events ─────────────────────────────────────────────────────────────
+  function _onMouseDown(e) {
+    const { sx, sy } = _eventToScreen(e);
+    const { wx, wy } = _screenToWorld(sx, sy);
+
+    if (e.button === 0) {
+      mouse.down = true;
+      mouse.dragStart = { sx, sy, wx, wy };
+      mouse.dragging = false;
+    } else if (e.button === 2) {
+      mouse.rightDown = true;
+      _callbacks.onRightClick?.({ sx, sy, wx, wy });
+    }
+  }
+
+  function _onMouseMove(e) {
+    const { sx, sy } = _eventToScreen(e);
+    const { wx, wy } = _screenToWorld(sx, sy);
+    mouse.x = sx;
+    mouse.y = sy;
+    mouse.wx = wx;
+    mouse.wy = wy;
+
+    if (mouse.down && mouse.dragStart) {
+      const dx = sx - mouse.dragStart.sx;
+      const dy = sy - mouse.dragStart.sy;
+      if (!mouse.dragging && Math.sqrt(dx*dx + dy*dy) > DRAG_THRESHOLD) {
+        mouse.dragging = true;
+      }
+      if (mouse.dragging) {
+        // Update selection box visual via callback
+        _callbacks.onDragUpdate?.({
+          x0: Math.min(mouse.dragStart.sx, sx),
+          y0: Math.min(mouse.dragStart.sy, sy),
+          x1: Math.max(mouse.dragStart.sx, sx),
+          y1: Math.max(mouse.dragStart.sy, sy),
+          wx0: Math.min(mouse.dragStart.wx, wx),
+          wy0: Math.min(mouse.dragStart.wy, wy),
+          wx1: Math.max(mouse.dragStart.wx, wx),
+          wy1: Math.max(mouse.dragStart.wy, wy),
+        });
+      }
+    }
+  }
+
+  function _onMouseUp(e) {
+    const { sx, sy } = _eventToScreen(e);
+    const { wx, wy } = _screenToWorld(sx, sy);
+
+    if (e.button === 0) {
+      if (mouse.dragging) {
+        // Box select complete
+        const ds = mouse.dragStart;
+        _callbacks.onBoxSelect?.({
+          wx0: Math.min(ds.wx, wx),
+          wy0: Math.min(ds.wy, wy),
+          wx1: Math.max(ds.wx, wx),
+          wy1: Math.max(ds.wy, wy),
+        });
+        _callbacks.onDragEnd?.();
+      } else {
+        // Single click
+        _callbacks.onLeftClick?.({ sx, sy, wx, wy });
+      }
+      mouse.down = false;
+      mouse.dragging = false;
+      mouse.dragStart = null;
+    } else if (e.button === 2) {
+      mouse.rightDown = false;
+    }
+  }
+
+  function _onContextMenu(e) {
+    e.preventDefault();
+  }
+
+  function _onMouseLeave() {
+    mouse.down = false;
+    mouse.dragging = false;
+    mouse.dragStart = null;
+    _callbacks.onDragEnd?.();
+  }
+
+  // ─── Minimap click ────────────────────────────────────────────────────────────
+  // Call this with the minimap canvas element to register click-to-jump.
+  // viewW, viewH: game viewport dimensions in pixels
+  // mapW, mapH  : total map dimensions in pixels
+
+  function initMinimap(minimapCanvas, viewW, viewH, mapW, mapH) {
+    minimapCanvas.addEventListener('click', (e) => {
+      const rect = minimapCanvas.getBoundingClientRect();
+      const mx = e.clientX - rect.left;
+      const my = e.clientY - rect.top;
+      const mw = rect.width;
+      const mh = rect.height;
+
+      // Convert minimap click to world position
+      const wx = (mx / mw) * mapW;
+      const wy = (my / mh) * mapH;
+
+      // Centre viewport on click point
+      _scroll.x = clamp(wx - viewW / 2, 0, Math.max(0, mapW - viewW));
+      _scroll.y = clamp(wy - viewH / 2, 0, Math.max(0, mapH - viewH));
+    });
+  }
+
+  // ─── Scroll update (call every frame) ────────────────────────────────────────
+  // Handles WASD / arrow key scroll and edge-pan.
+  // dt      : delta time in seconds
+  // viewW, viewH: viewport size
+  // mapW, mapH  : total map size
+
+  function updateScroll(dt, viewW, viewH, mapW, mapH) {
+    const speed = SCROLL_SPEED * CELL * dt;
+    let dx = 0, dy = 0;
+
+    // Keyboard scroll
+    if (keys['ArrowLeft']  || keys['a'] || keys['A']) dx -= speed;
+    if (keys['ArrowRight'] || keys['d'] || keys['D']) dx += speed;
+    if (keys['ArrowUp']    || keys['w'] || keys['W']) dy -= speed;
+    if (keys['ArrowDown']  || keys['s'] || keys['S']) dy += speed;
+
+    // Edge pan (only when mouse is over the canvas)
+    if (_canvas && document.contains(_canvas)) {
+      const rect = _canvas.getBoundingClientRect();
+      const inCanvas =
+        mouse.x >= 0 && mouse.x <= rect.width &&
+        mouse.y >= 0 && mouse.y <= rect.height;
+
+      if (inCanvas) {
+        const edgeSpeed = EDGE_PAN_SPEED * CELL * dt;
+        if (mouse.x < EDGE_PAN_MARGIN)              dx -= edgeSpeed;
+        if (mouse.x > rect.width - EDGE_PAN_MARGIN) dx += edgeSpeed;
+        if (mouse.y < EDGE_PAN_MARGIN)              dy -= edgeSpeed;
+        if (mouse.y > rect.height - EDGE_PAN_MARGIN)dy += edgeSpeed;
+      }
+    }
+
+    if (dx !== 0 || dy !== 0) {
+      _scroll.x = clamp(_scroll.x + dx, 0, Math.max(0, mapW - viewW));
+      _scroll.y = clamp(_scroll.y + dy, 0, Math.max(0, mapH - viewH));
+    }
+  }
+
+  // ─── Editor mouse helpers ─────────────────────────────────────────────────────
+  // Attach paint-on-drag behaviour to the editor canvas.
+  // onPaint(col, row) is called for each cell the mouse passes over while held.
+
+  function initEditorCanvas(canvas, scrollRef, cols, rows, cellSize, onPaint) {
+    let painting = false;
+
+    function getCell(e) {
+      const rect = canvas.getBoundingClientRect();
+      const sx = e.clientX - rect.left;
+      const sy = e.clientY - rect.top;
+      const col = Math.floor((sx + scrollRef.x) / cellSize);
+      const row = Math.floor((sy + scrollRef.y) / cellSize);
+      return { col, row };
+    }
+
+    function tryPaint(e) {
+      const { col, row } = getCell(e);
+      if (col >= 0 && col < cols && row >= 0 && row < rows) {
+        onPaint(col, row);
+      }
+    }
+
+    canvas.addEventListener('mousedown', (e) => {
+      if (e.button === 0) { painting = true; tryPaint(e); }
+    });
+    canvas.addEventListener('mousemove', (e) => {
+      if (painting) tryPaint(e);
+      // Update coords display
+      const { col, row } = getCell(e);
+      const coordEl = document.getElementById('editor-coords');
+      if (coordEl) coordEl.textContent = `${col}, ${row}`;
+    });
+    canvas.addEventListener('mouseup',    () => { painting = false; });
+    canvas.addEventListener('mouseleave', () => { painting = false; });
+    canvas.addEventListener('contextmenu', e => e.preventDefault());
+
+    // Editor scroll: middle-mouse drag or arrow keys
+    let mmDrag = false, mmStart = null, mmScroll = null;
+    canvas.addEventListener('mousedown', (e) => {
+      if (e.button === 1) {
+        mmDrag = true;
+        mmStart = { x: e.clientX, y: e.clientY };
+        mmScroll = { x: scrollRef.x, y: scrollRef.y };
+        e.preventDefault();
+      }
+    });
+    canvas.addEventListener('mousemove', (e) => {
+      if (mmDrag && mmStart) {
+        const dx = e.clientX - mmStart.x;
+        const dy = e.clientY - mmStart.y;
+        scrollRef.x = clamp(mmScroll.x - dx, 0, Math.max(0, cols * cellSize - canvas.width));
+        scrollRef.y = clamp(mmScroll.y - dy, 0, Math.max(0, rows * cellSize - canvas.height));
+      }
+    });
+    window.addEventListener('mouseup', (e) => {
+      if (e.button === 1) mmDrag = false;
+    });
+  }
+
+  // ─── Editor keyboard scroll (call each frame in editor loop) ─────────────────
+  function updateEditorScroll(dt, scrollRef, cols, rows, cellSize, canvasW, canvasH) {
+    const speed = SCROLL_SPEED * cellSize * dt;
+    if (keys['ArrowLeft']  || keys['a'] || keys['A']) scrollRef.x -= speed;
+    if (keys['ArrowRight'] || keys['d'] || keys['D']) scrollRef.x += speed;
+    if (keys['ArrowUp']    || keys['w'] || keys['W']) scrollRef.y -= speed;
+    if (keys['ArrowDown']  || keys['s'] || keys['S']) scrollRef.y += speed;
+    scrollRef.x = clamp(scrollRef.x, 0, Math.max(0, cols * cellSize - canvasW));
+    scrollRef.y = clamp(scrollRef.y, 0, Math.max(0, rows * cellSize - canvasH));
+  }
+
+  // ─── Public mouse state accessors ─────────────────────────────────────────────
+  function getMouseScreen() { return { x: mouse.x, y: mouse.y }; }
+  function getMouseWorld()  { return { x: mouse.wx, y: mouse.wy }; }
+  function isDragging()     { return mouse.dragging; }
+
+  return {
+    init,
+    destroy,
+    initMinimap,
+    initEditorCanvas,
+    updateScroll,
+    updateEditorScroll,
+    isKeyDown,
+    getMouseScreen,
+    getMouseWorld,
+    isDragging,
+    screenToWorld,
+    worldToScreen,
+  };
+
+})();

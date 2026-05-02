@@ -1,0 +1,263 @@
+// ═══════════════════════════════════════════════════
+//  IRON COMMAND — Map Editor
+// ═══════════════════════════════════════════════════
+
+'use strict';
+
+const Editor = (() => {
+
+  // ─── State ────────────────────────────────────────────────────────────────────
+  let _level      = null;   // working copy of the mission being edited
+  let _activeTool = 'terrain_grass';
+  let _scroll     = { x: 0, y: 0 };
+  let _hovCol     = -1;
+  let _hovRow     = -1;
+  let _canvas     = null;
+  let _rafId      = null;
+  let _onDone     = null;   // callback(savedLevel | null)
+
+  // ─── Open editor ──────────────────────────────────────────────────────────────
+  // mission : mission object to edit (will be deep-cloned)
+  // onDone  : function(level) called on save, or function(null) on back
+  function open(mission, onDone) {
+    _level    = Storage.cloneMission(mission);
+    _onDone   = onDone;
+    _scroll   = { x: 0, y: 0 };
+    _activeTool = 'terrain_grass';
+    _hovCol   = -1;
+    _hovRow   = -1;
+
+    _buildUI();
+    _startLoop();
+  }
+
+  // ─── Build sidebar UI ─────────────────────────────────────────────────────────
+  function _buildUI() {
+    // Populate fields
+    document.getElementById('editor-name').value     = _level.name || '';
+    document.getElementById('editor-win').value      = _level.winCondition || 'destroy_enemy_hq';
+    document.getElementById('editor-win-param').value= _level.winParam || 5;
+    document.getElementById('editor-cols').value     = _level.cols || DEFAULT_COLS;
+    document.getElementById('editor-rows').value     = _level.rows || DEFAULT_ROWS;
+
+    _toggleWinParam();
+
+    // Tool groups
+    const container = document.getElementById('editor-tool-groups');
+    container.innerHTML = '';
+
+    for (const group of EDITOR_TOOL_GROUPS) {
+      const labelEl = document.createElement('div');
+      labelEl.className = 'tool-group-label';
+      labelEl.textContent = group.label;
+      container.appendChild(labelEl);
+
+      for (const tool of group.tools) {
+        const btn = document.createElement('button');
+        btn.className   = 'tool-btn' + (tool.key === _activeTool ? ' active' : '');
+        btn.textContent = tool.label;
+        btn.dataset.key = tool.key;
+        btn.addEventListener('click', () => _selectTool(tool.key));
+        container.appendChild(btn);
+      }
+    }
+
+    // Wire up controls
+    document.getElementById('editor-win').onchange = _toggleWinParam;
+    document.getElementById('editor-save').onclick  = _save;
+    document.getElementById('editor-clear').onclick = _clear;
+    document.getElementById('editor-back').onclick  = () => _finish(null);
+
+    // Canvas setup
+    _canvas = document.getElementById('editor-canvas');
+    _resizeCanvas();
+
+    // Input
+    Input.initEditorCanvas(
+      _canvas, _scroll,
+      _level.cols, _level.rows, CELL,
+      _paint
+    );
+
+    _canvas.addEventListener('mousemove', _onMouseMove);
+    _canvas.addEventListener('mouseleave', () => { _hovCol = -1; _hovRow = -1; });
+  }
+
+  function _toggleWinParam() {
+    const wc   = document.getElementById('editor-win').value;
+    const wrap = document.getElementById('editor-win-param-wrap');
+    wrap.style.display = wc === 'survive_waves' ? 'block' : 'none';
+  }
+
+  function _resizeCanvas() {
+    const wrap = document.getElementById('editor-canvas-wrap');
+    _canvas.width  = wrap.clientWidth  || 900;
+    _canvas.height = wrap.clientHeight || 600;
+  }
+
+  // ─── Tool selection ───────────────────────────────────────────────────────────
+  function _selectTool(key) {
+    _activeTool = key;
+    // Update button highlight
+    document.querySelectorAll('.tool-btn').forEach(btn => {
+      btn.classList.toggle('active', btn.dataset.key === key);
+    });
+  }
+
+  // ─── Paint a cell ─────────────────────────────────────────────────────────────
+  function _paint(col, row) {
+    if (!_level) return;
+    if (col < 0 || col >= _level.cols || row < 0 || row >= _level.rows) return;
+
+    const tool = _activeTool;
+
+    if (tool.startsWith('terrain_')) {
+      const type = tool.slice(8);
+      if (TERRAIN[type]) _level.grid[row][col] = type;
+
+    } else if (tool === 'erase') {
+      _level.grid[row][col] = 'grass';
+      _level.units    = _level.units.filter(u => !(u.col === col && u.row === row));
+      _level.enemies  = _level.enemies.filter(e => !(e.col === col && e.row === row));
+      _level.buildings= _level.buildings.filter(b => !(b.col === col && b.row === row));
+
+    } else if (tool.startsWith('punit_')) {
+      const type = tool.slice(6);
+      if (!UNIT_DEF[type]) return;
+      // Only one unit per cell
+      if (_level.units.find(u => u.col === col && u.row === row)) return;
+      if (_level.buildings.find(b => b.col === col && b.row === row)) return;
+      _level.units.push({ col, row, type });
+
+    } else if (tool.startsWith('eunit_')) {
+      const type = tool.slice(6);
+      if (!ENEMY_UNIT_DEF[type]) return;
+      if (_level.enemies.find(e => e.col === col && e.row === row)) return;
+      if (_level.buildings.find(b => b.col === col && b.row === row)) return;
+      _level.enemies.push({ col, row, type });
+
+    } else if (tool.startsWith('pbld_')) {
+      const type = tool.slice(5);
+      _placeBuilding(col, row, type);
+
+    } else if (tool.startsWith('ebld_')) {
+      const type = tool.slice(5);
+      _placeBuilding(col, row, type);
+
+    } else if (tool.startsWith('nbld_')) {
+      const type = tool.slice(5);
+      _placeBuilding(col, row, type);
+    }
+  }
+
+  function _placeBuilding(col, row, type) {
+    if (!BLDG_DEF[type]) return;
+    // Remove any existing unit or building on that cell
+    _level.units    = _level.units.filter(u => !(u.col === col && u.row === row));
+    _level.enemies  = _level.enemies.filter(e => !(e.col === col && e.row === row));
+    _level.buildings= _level.buildings.filter(b => !(b.col === col && b.row === row));
+    _level.buildings.push({ col, row, type });
+  }
+
+  // ─── Mouse hover ─────────────────────────────────────────────────────────────
+  function _onMouseMove(e) {
+    const rect = _canvas.getBoundingClientRect();
+    const sx   = e.clientX - rect.left;
+    const sy   = e.clientY - rect.top;
+    _hovCol = Math.floor((sx + _scroll.x) / CELL);
+    _hovRow = Math.floor((sy + _scroll.y) / CELL);
+  }
+
+  // ─── Save ─────────────────────────────────────────────────────────────────────
+  function _save() {
+    // Read current field values into level
+    _level.name         = document.getElementById('editor-name').value.trim() || 'Unnamed';
+    _level.winCondition = document.getElementById('editor-win').value;
+    _level.winParam     = parseInt(document.getElementById('editor-win-param').value, 10) || 5;
+
+    // Handle map resize
+    const newCols = clamp(parseInt(document.getElementById('editor-cols').value, 10) || DEFAULT_COLS, 20, 160);
+    const newRows = clamp(parseInt(document.getElementById('editor-rows').value, 10) || DEFAULT_ROWS, 10, 100);
+    _resizeGrid(newCols, newRows);
+
+    // Persist
+    const saved = Storage.saveMission(_level);
+    _setStatus(`Saved: "${saved.name}"`);
+    _finish(saved);
+  }
+
+  // Resize grid preserving existing terrain, cropping or padding with grass
+  function _resizeGrid(newCols, newRows) {
+    if (newCols === _level.cols && newRows === _level.rows) return;
+
+    const oldGrid = _level.grid;
+    const newGrid = Array.from({ length: newRows }, (_, r) =>
+      Array.from({ length: newCols }, (_, c) =>
+        (oldGrid[r] && oldGrid[r][c]) ? oldGrid[r][c] : 'grass'
+      )
+    );
+
+    _level.grid  = newGrid;
+    _level.cols  = newCols;
+    _level.rows  = newRows;
+
+    // Remove out-of-bounds objects
+    _level.units    = _level.units.filter(u => u.col < newCols && u.row < newRows);
+    _level.enemies  = _level.enemies.filter(e => e.col < newCols && e.row < newRows);
+    _level.buildings= _level.buildings.filter(b => b.col < newCols && b.row < newRows);
+  }
+
+  // ─── Clear map ────────────────────────────────────────────────────────────────
+  function _clear() {
+    if (!confirm('Clear the entire map? This cannot be undone.')) return;
+    _level.grid      = Array.from({ length: _level.rows }, () => Array(_level.cols).fill('grass'));
+    _level.units     = [];
+    _level.enemies   = [];
+    _level.buildings = [];
+    _setStatus('Map cleared.');
+  }
+
+  // ─── Status message ───────────────────────────────────────────────────────────
+  function _setStatus(msg) {
+    const el = document.getElementById('editor-status');
+    if (el) el.textContent = msg;
+  }
+
+  // ─── Finish ───────────────────────────────────────────────────────────────────
+  function _finish(result) {
+    _stopLoop();
+    if (_onDone) _onDone(result);
+  }
+
+  // ─── Render loop ──────────────────────────────────────────────────────────────
+  function _startLoop() {
+    let lastT = 0;
+
+    function loop(t) {
+      const dt = Math.min((t - lastT) / 1000, 0.05);
+      lastT = t;
+
+      // Keyboard scroll
+      Input.updateEditorScroll(
+        dt, _scroll,
+        _level.cols, _level.rows, CELL,
+        _canvas.width, _canvas.height
+      );
+
+      // Draw
+      Renderer.drawEditor(_canvas, _level, _scroll, _activeTool, _hovCol, _hovRow);
+
+      _rafId = requestAnimationFrame(loop);
+    }
+
+    _rafId = requestAnimationFrame(loop);
+  }
+
+  function _stopLoop() {
+    if (_rafId) { cancelAnimationFrame(_rafId); _rafId = null; }
+  }
+
+  // ─── Public ───────────────────────────────────────────────────────────────────
+  return { open };
+
+})();

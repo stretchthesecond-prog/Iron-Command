@@ -1,0 +1,185 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Iron Command</title>
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+
+  <!-- ═══ MAIN MENU ═══ -->
+  <div id="screen-menu" class="screen active">
+    <div class="menu-bg"></div>
+    <div class="menu-panel">
+      <div class="menu-title">
+        <span class="title-iron">IRON</span>
+        <span class="title-command">COMMAND</span>
+      </div>
+      <div class="menu-subtitle">Strategic Combat Simulator</div>
+      <div class="menu-buttons">
+        <button class="menu-btn" id="btn-new-campaign">NEW CAMPAIGN</button>
+        <button class="menu-btn" id="btn-load-campaign">LOAD CAMPAIGN</button>
+        <button class="menu-btn" id="btn-editor">MAP EDITOR</button>
+        <button class="menu-btn menu-btn-dim" id="btn-about">ABOUT</button>
+      </div>
+      <div class="menu-version">v1.0</div>
+    </div>
+  </div>
+
+  <!-- ═══ CAMPAIGN SELECT ═══ -->
+  <div id="screen-campaign" class="screen">
+    <div class="menu-bg"></div>
+    <div class="campaign-panel">
+      <div class="panel-header">
+        <h2>SELECT MISSION</h2>
+        <button class="back-btn" id="btn-campaign-back">← BACK</button>
+      </div>
+      <div id="campaign-list" class="campaign-list"></div>
+      <div class="campaign-actions">
+        <button class="menu-btn" id="btn-campaign-new-mission">+ CREATE NEW MISSION</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══ ABOUT ═══ -->
+  <div id="screen-about" class="screen">
+    <div class="menu-bg"></div>
+    <div class="about-panel">
+      <h2>IRON COMMAND</h2>
+      <p>A Red Alert-inspired real-time strategy game.</p>
+      <p>Build your base, command your forces, destroy the enemy HQ.</p>
+      <div class="about-controls">
+        <h3>CONTROLS</h3>
+        <table class="controls-table">
+          <tr><td>Left-click</td><td>Select unit</td></tr>
+          <tr><td>Click + drag</td><td>Box select multiple units</td></tr>
+          <tr><td>Right-click map</td><td>Move / attack selected units</td></tr>
+          <tr><td>Right-click building</td><td>Set as primary production</td></tr>
+          <tr><td>WASD / Arrows</td><td>Scroll map</td></tr>
+          <tr><td>Mouse edge</td><td>Edge-pan</td></tr>
+          <tr><td>Minimap click</td><td>Jump to location</td></tr>
+          <tr><td>Escape</td><td>Cancel / deselect</td></tr>
+        </table>
+      </div>
+      <button class="menu-btn" id="btn-about-back">← BACK</button>
+    </div>
+  </div>
+
+  <!-- ═══ EDITOR ═══ -->
+  <div id="screen-editor" class="screen">
+    <div id="editor-sidebar" class="editor-sidebar">
+      <div class="sidebar-header">MAP EDITOR</div>
+
+      <label class="sidebar-label">Mission Name</label>
+      <input type="text" id="editor-name" class="sidebar-input" placeholder="Mission name...">
+
+      <label class="sidebar-label">Win Condition</label>
+      <select id="editor-win" class="sidebar-select">
+        <option value="destroy_enemy_hq">Destroy Enemy HQ</option>
+        <option value="destroy_all">Destroy All Enemies</option>
+        <option value="capture_zone">Capture Zone</option>
+        <option value="survive_waves">Survive N Waves</option>
+        <option value="escort">Escort Jeep</option>
+      </select>
+
+      <div id="editor-win-param-wrap" style="display:none">
+        <label class="sidebar-label">Wave Count</label>
+        <input type="number" id="editor-win-param" class="sidebar-input" value="5" min="1" max="30">
+      </div>
+
+      <div class="sidebar-label" style="margin-top:8px">Map Size</div>
+      <div style="display:flex;gap:4px;margin-bottom:6px">
+        <input type="number" id="editor-cols" class="sidebar-input" value="80" min="20" max="160" style="width:48%">
+        <input type="number" id="editor-rows" class="sidebar-input" value="50" min="10" max="100" style="width:48%">
+      </div>
+
+      <div id="editor-tool-groups" class="editor-tool-groups"></div>
+
+      <div class="sidebar-actions">
+        <button class="sidebar-btn primary" id="editor-save">SAVE MISSION</button>
+        <button class="sidebar-btn" id="editor-clear">CLEAR MAP</button>
+        <button class="sidebar-btn" id="editor-back">← BACK</button>
+      </div>
+
+      <div id="editor-status" class="editor-status"></div>
+    </div>
+    <div id="editor-canvas-wrap" class="editor-canvas-wrap">
+      <canvas id="editor-canvas"></canvas>
+      <div id="editor-coords" class="editor-coords"></div>
+    </div>
+  </div>
+
+  <!-- ═══ GAME ═══ -->
+  <div id="screen-game" class="screen">
+    <div id="game-topbar" class="game-topbar">
+      <span id="hud-mission" class="hud-label"></span>
+      <span id="hud-hq" class="hud-hq"></span>
+      <span id="hud-gold" class="hud-gold">$ 0</span>
+      <span id="hud-units" class="hud-dim"></span>
+      <span id="hud-win" class="hud-dim"></span>
+      <div class="hud-right">
+        <button id="btn-pause" class="hud-btn">⏸</button>
+        <button id="btn-game-menu" class="hud-btn">MENU</button>
+      </div>
+    </div>
+
+    <div id="game-main" class="game-main">
+      <div id="game-canvas-wrap" class="game-canvas-wrap">
+        <canvas id="game-canvas"></canvas>
+        <canvas id="minimap-canvas" class="minimap"></canvas>
+        <div id="game-log" class="game-log"></div>
+        <div id="sel-box" class="sel-box" style="display:none"></div>
+      </div>
+
+      <div id="game-sidebar" class="game-sidebar">
+        <div class="sidebar-cols">
+          <div class="sidebar-col">
+            <div class="col-header">BUILD</div>
+            <div id="build-list"></div>
+          </div>
+          <div class="sidebar-col">
+            <div class="col-header">TRAIN</div>
+            <div id="train-list"></div>
+          </div>
+        </div>
+        <div id="selected-panel" class="selected-panel"></div>
+        <div class="sidebar-hint">
+          R-click bldg = set primary<br>
+          R-click map = move/attack<br>
+          Drag = box select<br>
+          WASD = scroll
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══ END SCREEN ═══ -->
+  <div id="screen-end" class="screen">
+    <div class="menu-bg"></div>
+    <div class="end-panel">
+      <div id="end-icon" class="end-icon"></div>
+      <div id="end-title" class="end-title"></div>
+      <div id="end-subtitle" class="end-subtitle"></div>
+      <div class="end-buttons">
+        <button class="menu-btn" id="btn-retry">RETRY MISSION</button>
+        <button class="menu-btn" id="btn-end-menu">MAIN MENU</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══ SCRIPTS (load order matters) ═══ -->
+  <script src="js/constants.js"></script>
+  <script src="js/storage.js"></script>
+  <script src="js/sprites.js"></script>
+  <script src="js/fog.js"></script>
+  <script src="js/combat.js"></script>
+  <script src="js/pathfind.js"></script>
+  <script src="js/input.js"></script>
+  <script src="js/renderer.js"></script>
+  <script src="js/editor.js"></script>
+  <script src="js/game.js"></script>
+  <script src="js/main.js"></script>
+
+</body>
+</html>
